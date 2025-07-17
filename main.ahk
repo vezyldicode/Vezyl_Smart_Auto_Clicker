@@ -3,6 +3,7 @@
 #SingleInstance Force
 SetTitleMatchMode(2)
 SendMode("InputThenPlay")
+CoordMode "Mouse", "Screen"
 
 class WindowManager {
     static GetWindowList() {
@@ -16,14 +17,17 @@ class WindowManager {
         return winList
     }
 }
-
 class AutoClicker {
-    __New(selectedID, button, interval, onlyActive, randomInterval := true) {
+    __New(selectedID, button, interval, onlyActive, randomInterval := true, clickX := "", clickY := "", randomRange := 20, keyHotkey := "") {
         this.selectedID := selectedID
         this.button := button
         this.interval := interval
         this.onlyActive := onlyActive
         this.randomInterval := randomInterval
+        this.clickX := clickX
+        this.clickY := clickY
+        this.randomRange := randomRange
+        this.keyHotkey := keyHotkey
         this.running := false
         this.timer := ObjBindMethod(this, "DoClick")
     }
@@ -51,24 +55,37 @@ class AutoClicker {
 
     DoClick(*) {
         if (this.onlyActive) {
-            if (WinGetID("A") = this.selectedID) {
-                SendEvent("{" this.button " down}")
-                Sleep 10
-                SendEvent("{" this.button " up}")
+            try {
+                activeID := WinGetID("A")
+            } catch {
+                return
+            }
+            if (activeID = this.selectedID) {
+                this.ClickAtPosition()
             }
         } else {
-            SendEvent("{" this.button " down}")
-            Sleep 10
-            SendEvent("{" this.button " up}")
+            this.ClickAtPosition()
         }
         if (this.running)
             this._SetNextTimer()
     }
 
+    ClickAtPosition() {
+        if (this.button = "key" && this.keyHotkey != "") {
+            Send "{" this.keyHotkey "}"
+        } else if (this.clickX != "" && this.clickY != "") {
+            MouseGetPos(&curX, &curY)
+            if (curX != this.clickX || curY != this.clickY)
+                MouseMove(this.clickX, this.clickY, 0)
+            Click(this.button)
+        } else {
+            Click(this.button)
+        }
+    }
     _SetNextTimer() {
         if this.randomInterval {
-            min := Max(1, this.interval - 20)
-            maxDelay := this.interval + 20
+            min := Max(1, this.interval - this.randomRange)
+            maxDelay := this.interval + this.randomRange
             delay := Random(min, maxDelay)
         } else {
             delay := this.interval
@@ -79,11 +96,24 @@ class AutoClicker {
 
 class AutoClickerGUI {
     __New() {
+        this.keyHotkey := "" ; Khởi tạo thuộc tính keyHotkey
+        this.selectedID := ""
+        this.clicker := ""
+
         FileEncoding "UTF-8"
-        langPath := "resources\lang\en.ini"
+        ; Đọc ngôn ngữ từ config
+        langCode := IniRead("VezylAutoClickerEclectron\config.ini", "General", "Language", "en")
+        langPath := "resources\lang\" langCode ".ini"
         L := Map()
-        for key in ["MouseButton","Left","Right","Middle","ClickSpeed","Hotkey","OnlyActive","SelectWindow","Start","MsgSelectWindow","MsgEnterHotkey","MsgClickSpeed","RandomInterval"]
-            L[key] := IniRead(langPath, "Label", key, key)
+        if FileExist(langPath) {
+            for key in ["MouseButton","Left","Right","Middle","ClickSpeed","Hotkey","OnlyActive","SelectWindow","Start","Stop", "MsgSelectWindow","MsgEnterHotkey","MsgClickSpeed","RandomInterval","UsePos", "Refresh", "GetPos", "Key"]
+                L[key] := IniRead(langPath, "Label", key, key)
+        } else {
+            ; fallback sang en.ini hoặc giá trị mặc định
+            langPath := "resources\lang\en.ini"
+            for key in ["MouseButton","Left","Right","Middle","ClickSpeed","Hotkey","OnlyActive","SelectWindow","Start","Stop", "MsgSelectWindow","MsgEnterHotkey","MsgClickSpeed","RandomInterval","UsePos", "Refresh", "GetPos", "Key"]
+                L[key] := IniRead(langPath, "Label", key, key)
+        }
 
         if FileExist("VezylAutoClickerProton\local.ini") {
             iniPath := "VezylAutoClickerProton\local.ini"
@@ -95,7 +125,9 @@ class AutoClickerGUI {
         this.hotkey := IniRead(iniPath, "General", "Hotkey", "F6")
         this.onlyActive := !!IniRead(iniPath, "General", "OnlyActive", "1")
         this.randomInterval := !!IniRead(iniPath, "General", "RandomInterval", "1")
-
+        this.usePos := !!IniRead(iniPath, "General", "UsePos", "0")
+        this.clickX := IniRead(iniPath, "General", "ClickX", "")
+        this.clickY := IniRead(iniPath, "General", "ClickY", "")
         this.winList := WindowManager.GetWindowList()
         this.titles := []
         for win in this.winList
@@ -107,12 +139,25 @@ class AutoClickerGUI {
         this.gui.BackColor := 0xFBFBFB
         this.gui.SetFont("c484b6a")
         this.gui.SetFont("s9", "Segoe UI")
+        this.gui.Title := "Vezyl Smart Auto Clicker"
 
-        ; --- Nút chuột: 3 radio trên 1 hàng ---
+        ; --- Nút chuột: 3 radio trên 1 hàng + 1 radio phím bất kỳ ---
         this.gui.AddText("xm ym", L["MouseButton"])
         this.btnRadio := this.gui.AddRadio("xp+70 yp-2 vBtnLeft" (this.button="left"?" Checked":"") , L["Left"])
         this.btnRadio2 := this.gui.AddRadio("xp+60 yp vBtnRight" (this.button="right"?" Checked":""), L["Right"])
         this.btnRadio3 := this.gui.AddRadio("xp+60 yp vBtnMiddle" (this.button="middle"?" Checked":""), L["Middle"])
+        this.btnRadioKey := this.gui.AddRadio("xp+60 yp vBtnKey" (this.button="key"?" Checked":""), L["Key"])
+
+        ; --- Hotkey cho phím bất kỳ ---
+        this.hkKey := this.gui.AddHotkey("xp+60 yp+2 w100 vKeyHotkey", this.keyHotkey ? this.keyHotkey : "")
+        ; Ẩn mặc định nếu không chọn radio phím
+        this.hkKey.Visible := (this.button="key")
+        ; Sự kiện chuyển radio
+        this.btnRadio.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
+        this.btnRadio2.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
+        this.btnRadio3.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
+        this.btnRadioKey.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
+
 
         ; --- Tốc độ click và Hotkey trên cùng 1 hàng ---
         this.gui.AddText("xm y+15", L["ClickSpeed"])
@@ -120,21 +165,44 @@ class AutoClickerGUI {
         this.gui.AddText("xp+90 yp", L["Hotkey"])
         this.hkCtrl := this.gui.AddHotkey("xp+110 yp-2 w100 vHotkey", this.hotkey)
 
+
+        ; --- Đọc randomRange từ config ---
+        this.randomRange := Integer(IniRead("VezylAutoClickerEclectron\config.ini", "General", "RandomRange", "20"))
+        randomLabel := (L.Has("RandomInterval") ? L["RandomInterval"] : "Random interval") " (+-" this.randomRange "ms)"
+
+        ; --- Checkbox random interval ---
+        this.chkRandomInterval := this.gui.AddCheckBox("xm y+10 vRandomInterval" (this.randomInterval?" Checked":""), randomLabel)
+
         ; --- Checkbox ---
         this.chkOnlyActive := this.gui.AddCheckBox("xm y+15 vOnlyActive" (this.onlyActive?" Checked":""), L["OnlyActive"])
         this.chkOnlyActive.OnEvent("Click", ObjBindMethod(this, "OnOnlyActiveChanged"))
 
-        ; --- Checkbox random interval ---
-        this.chkRandomInterval := this.gui.AddCheckBox("xm y+10 vRandomInterval" (this.randomInterval?" Checked":""), L.Has("RandomInterval") ? L["RandomInterval"] : "Random interval (+-20ms)")
 
         ; --- Chọn cửa sổ xuống dưới cùng ---
         this.txtWin := this.gui.AddText("xm y+25", L["SelectWindow"])
-        this.cb := this.gui.AddComboBox("xp+90 yp-2 vWinTitle w300", this.titles)
+        this.cb := this.gui.AddComboBox("xp+90 yp-2 vWinTitle w250", this.titles)
+        this.btnRefresh := this.gui.AddButton("xp+250 yp-2 w50", L["Refresh"]) ; Nút refresh
+        this.btnRefresh.OnEvent("Click", ObjBindMethod(this, "RefreshWindowList"))
 
         if !this.onlyActive {
             this.txtWin.Visible := false
             this.cb.Visible := false
+            this.btnRefresh.Visible := false
         }
+        ; --- Checkbox bật/tắt click tại vị trí chỉ định ---
+        this.chkUsePos := this.gui.AddCheckBox("xm y+10 vUsePos" (this.usePos ? " Checked" : ""), L["UsePos"])
+        this.chkUsePos.OnEvent("Click", ObjBindMethod(this, "OnUsePosChanged"))
+
+        ; --- Nhập tọa độ click và nút Get Pos ---
+        this.txtX := this.gui.AddText("xm y+15", "X:")
+        this.edtX := this.gui.AddEdit("xp+20 yp-2 w60 vClickX", this.clickX)
+        this.txtY := this.gui.AddText("xp+70 yp", "Y:")
+        this.edtY := this.gui.AddEdit("xp+20 yp-2 w60 vClickY", this.clickY)
+        this.btnGetPos := this.gui.AddButton("xp+80 yp-2 w70", L["GetPos"])
+        this.btnGetPos.OnEvent("Click", ObjBindMethod(this, "GetPos_Click"))
+
+        ; Ẩn các control tọa độ nếu chưa check
+        this.OnUsePosChanged()
 
         this.btnStart := this.gui.AddButton("xm y+20 Default", L["Start"])
         this.btnStart.OnEvent("Click", ObjBindMethod(this, "Start_Click"))
@@ -148,6 +216,20 @@ class AutoClickerGUI {
         show := this.chkOnlyActive.Value
         this.txtWin.Visible := show
         this.cb.Visible := show
+        this.btnRefresh.Visible := show ; Ẩn/hiện nút Refresh cùng combobox
+    }
+
+    OnUsePosChanged(*) {
+        show := this.chkUsePos.Value
+        this.txtX.Visible := show
+        this.edtX.Visible := show
+        this.txtY.Visible := show
+        this.edtY.Visible := show
+        this.btnGetPos.Visible := show
+    }
+    OnRadioChanged(*) {
+        isKey := this.btnRadioKey.Value
+        this.hkKey.Visible := isKey
     }
 
     Show() {
@@ -159,7 +241,7 @@ class AutoClickerGUI {
             ; Nếu chỉ click khi cửa sổ active, bắt buộc phải chọn cửa sổ
             if (this.chkOnlyActive.Value) {
                 if (this.cb.Text = "") {
-                    MsgBox "Vui lòng chọn một cửa sổ!"
+                    MsgBox "Please select 1 window or uncheck only click on certain windows"
                     return
                 }
                 Loop this.winList.Length {
@@ -178,6 +260,14 @@ class AutoClickerGUI {
                 this.button := "right"
             else if (this.btnRadio3.Value)
                 this.button := "middle"
+            else if (this.btnRadioKey.Value) {
+                this.button := "key"
+                this.keyHotkey := this.hkKey.Value
+                if (this.keyHotkey = "") {
+                    MsgBox "Please select a key!"
+                    return
+                }
+            }
             this.interval := Integer(this.edtInterval.Value)
             if (this.interval < 1) {
                 MsgBox "Tốc độ click phải lớn hơn 0!"
@@ -185,12 +275,24 @@ class AutoClickerGUI {
             }
             hk := this.hkCtrl.Value
             if (hk = "") {
-                MsgBox "Vui lòng nhập hotkey!"
+                MsgBox "Please enter a hotkey!"
                 return
             }
             this.hotkey := hk
             this.onlyActive := this.chkOnlyActive.Value
             this.randomInterval := this.chkRandomInterval.Value
+
+            ; Lấy giá trị từ checkbox
+            usePos := this.chkUsePos.Value
+            if usePos {
+                this.clickX := Trim(this.edtX.Value)
+                this.clickY := Trim(this.edtY.Value)
+                ; Nếu nhập thiếu 1 trong 2 thì bỏ qua (click theo chuột hiện tại)
+                if (this.clickX = "" or this.clickY = "")
+                    this.clickX := this.clickY := ""
+            } else {
+                this.clickX := this.clickY := ""
+            }
 
             ; Xử lý file local.ini
             localIniDir := "VezylAutoClickerProton"
@@ -206,11 +308,15 @@ class AutoClickerGUI {
             IniWrite(this.randomInterval,localIni, "General", "RandomInterval")
             IniWrite(this.cb.Text,   localIni, "General", "WindowTitle")
             IniWrite(this.selectedID,localIni, "General", "WindowID")
+            IniWrite(this.chkUsePos.Value, localIni, "General", "UsePos")
+            IniWrite(this.edtX.Value,      localIni, "General", "ClickX")
+            IniWrite(this.edtY.Value,      localIni, "General", "ClickY")
 
             if (IsObject(this.clicker))
                 this.clicker.Stop()
 
-            this.clicker := AutoClicker(this.selectedID, this.button, this.interval, this.onlyActive, this.randomInterval)
+            this.randomRange := Integer(IniRead("VezylAutoClickerEclectron\config.ini", "General", "RandomRange", "20"))
+            this.clicker := AutoClicker(this.selectedID, this.button, this.interval, this.onlyActive, this.randomInterval, this.clickX, this.clickY, this.randomRange, this.keyHotkey)
             Hotkey(this.hotkey, ObjBindMethod(this, "ToggleClicker"), "On")
             this.isRunning := true
             this.btnStart.Text := this.L.Has("Stop") ? this.L["Stop"] : "Dừng"
@@ -248,6 +354,42 @@ class AutoClickerGUI {
         if (IsObject(this.clicker))
             this.clicker.Stop()
         ExitApp
+    }
+
+    GetPos_Click(*) {
+        ; Nếu có chọn cửa sổ, active cửa sổ đó
+        if this.chkOnlyActive.Value && this.cb.Text != "" {
+            Loop this.winList.Length {
+                if (this.winList[A_Index].title = this.cb.Text) {
+                    try WinActivate("ahk_id " this.winList[A_Index].id)
+                    break
+                }
+            }
+            Sleep 300 ; Đợi cửa sổ active
+        }
+        ToolTip "Click chuột phải để lấy vị trí..."
+        ; Đợi click chuột phải
+        Hotkey("RButton", ObjBindMethod(this, "OnGetPosRButton"), "On")
+    }
+
+    OnGetPosRButton(*) {
+        MouseGetPos(&x, &y) ; Lấy tọa độ tuyệt đối trên màn hình
+        this.edtX.Value := x
+        this.edtY.Value := y
+        ToolTip
+        Hotkey("RButton", ObjBindMethod(this, "OnGetPosRButton"), "Off")
+        this.gui.Show("NA") ; Bring GUI to front
+        this.gui.Show() 
+    }
+
+    RefreshWindowList(*) {
+        this.winList := WindowManager.GetWindowList()
+        this.titles := []
+        for win in this.winList
+            this.titles.Push(win.title)
+        this.cb.Delete() ; Xóa hết các mục cũ
+        this.cb.Add(this.titles) ; Thêm lại danh sách mới
+        this.cb.Text := "" ; Reset lựa chọn
     }
 }
 
