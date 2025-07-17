@@ -2,7 +2,8 @@
 # Vezyl Smart Auto Clicker
 
 auto clicker software added smart features to improve user experience.
-This software for Shuriky asked me to program for his cheating purposes
+
+This software was developed because Shuriky asked me to do so for his cheating purposes
 
 
 ## Supported platforms
