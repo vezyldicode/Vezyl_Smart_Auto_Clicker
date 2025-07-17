@@ -1,9 +1,8 @@
 
 # Vezyl Smart Auto Clicker
 
-Basic translation software, providing the ability to translate to the specified language through popup when copying text
-
-Note that this is a learning project for myself, and I'm a hobbyist programmer.
+auto clicker software added smart features to improve user experience.
+This software for Shuriky asked me to program for his cheating purposes
 
 
 ## Supported platforms
