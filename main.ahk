@@ -1,9 +1,26 @@
+; Đảm bảo mã hóa file là UTF-8 cho Unicode
+FileEncoding "UTF-8"
+
 ; --- Biến toàn cục cờ lỗi ---
 global ErrorFlag := false
+global CONFIG_FILE := "VezylAutoClickerEclectron\config.ini"
+global GLOBAL_ENV := "VezylAutoClickerProton\global.ini"
+global LOCAL_ENV := "VezylAutoClickerProton\local.ini"
+
 
 SetError(msg) {
     global ErrorFlag
+    global app
     ErrorFlag := true
+    ; Dừng auto click nếu đang chạy
+    try {
+        if (IsObject(app) && IsObject(app.clicker) && app.isRunning) {
+            app.clicker.Stop()
+            app.isRunning := false
+            app.btnStart.Text := app.L.Has("Start") ? app.L["Start"] : "Bắt đầu"
+            SetTimer(app.mouseCheckTimer, 0)
+        }
+    }
     MsgBox msg
     ; Khởi động lại chương trình
     Run(A_ScriptFullPath)
@@ -30,7 +47,7 @@ class WindowManager {
     }
 }
 class AutoClicker {
-    __New(selectedID, button, interval, onlyActive, randomInterval := true, clickX := "", clickY := "", randomRange := 20, keyHotkey := "", hiddenClick := false) {
+    __New(selectedID, button, interval, onlyActive, randomInterval := true, clickX := "", clickY := "", randomRange := 20, keyHotkey := "", hiddenClick := false, stopMode := "unlimited", stopCount := 100, stopTime := 10) {
         this.selectedID := selectedID
         this.button := button
         this.interval := interval
@@ -43,11 +60,18 @@ class AutoClicker {
         this.hiddenClick := hiddenClick
         this.running := false
         this.timer := ObjBindMethod(this, "DoClick")
+        this.stopMode := stopMode
+        this.stopCount := stopCount
+        this.stopTime := stopTime
+        this.clickCounter := 0
+        this.startTick := 0
     }
 
     Start() {
         if (!this.running) {
             this.running := true
+            this.clickCounter := 0
+            this.startTick := A_TickCount
             this._SetNextTimer()
         }
     }
@@ -78,6 +102,17 @@ class AutoClicker {
             }
         } else {
             this.ClickAtPosition()
+        }
+        this.clickCounter += 1
+        if (this.stopMode = "count" && this.clickCounter >= this.stopCount) {
+            this.Stop()
+            MsgBox "Stopped after " this.stopCount " clicks."
+            return
+        }
+        if (this.stopMode = "time" && ((A_TickCount - this.startTick) >= this.stopTime * 1000)) {
+            this.Stop()
+            MsgBox "Stopped after " this.stopTime " seconds."
+            return
         }
         if (this.running)
             this._SetNextTimer()
@@ -127,10 +162,13 @@ class AutoClickerGUI {
         this.keyHotkey := "" ; Khởi tạo thuộc tính keyHotkey
         this.selectedID := ""
         this.clicker := ""
+        ; Kiểm tra premium từ file config khi khởi động
+        userKey := IniRead(GLOBAL_ENV, "General", "userError", "")
+        serial64 := GetDriveSerialBase64()
+        this.IsPremium := (userKey != "" && this.VerifyKey(serial64, userKey))
 
-        FileEncoding "UTF-8"
         ; Đọc ngôn ngữ từ config
-        langCode := IniRead("VezylAutoClickerEclectron\config.ini", "General", "Language", "en")
+        langCode := IniRead(CONFIG_FILE, "General", "Language", "en")
         langPath := "resources\lang\" langCode ".ini"
         L := Map()
         if FileExist(langPath) {
@@ -143,15 +181,15 @@ class AutoClickerGUI {
                 L[key] := IniRead(langPath, "Label", key, key)
         }
 
-        if FileExist("VezylAutoClickerProton\local.ini") {
-            iniPath := "VezylAutoClickerProton\local.ini"
+        if FileExist(LOCAL_ENV) {
+            iniPath := LOCAL_ENV
         } else {
-            iniPath := "VezylAutoClickerProton\global.ini"
+            iniPath := GLOBAL_ENV
         }
         this.button := IniRead(iniPath, "General", "Button", "left")
         this.interval := Integer(IniRead(iniPath, "General", "Interval", "100"))
         this.hotkey := IniRead(iniPath, "General", "Hotkey", "F6")
-        this.onlyActive := !!IniRead(iniPath, "General", "OnlyActive", "1")
+        clickMode := IniRead(iniPath, "General", "ClickMode", "all")
         this.randomInterval := !!IniRead(iniPath, "General", "RandomInterval", "1")
         this.usePos := !!IniRead(iniPath, "General", "UsePos", "0")
         this.clickX := IniRead(iniPath, "General", "ClickX", "")
@@ -165,55 +203,72 @@ class AutoClickerGUI {
 
         this.gui := Gui()
         this.gui.BackColor := 0xFBFBFB
-        this.gui.SetFont("c484b6a")
         this.gui.SetFont("s9", "Segoe UI")
-        this.gui.Title := "Vezyl Smart Auto Clicker"
+        if this.IsPremium
+            this.gui.Title := "Vezyl Smart Auto Clicker Pro"
+        else
+            this.gui.Title := "Vezyl Smart Auto Clicker"
 
-        ; --- Nút chuột: 3 radio trên 1 hàng + 1 radio phím bất kỳ ---
-        this.gui.AddText("xm ym", L["MouseButton"])
-        this.btnRadio := this.gui.AddRadio("xp+70 yp-2 vBtnLeft" (this.button="left"?" Checked":"") , L["Left"])
-        this.btnRadio2 := this.gui.AddRadio("xp+60 yp vBtnRight" (this.button="right"?" Checked":""), L["Right"])
-        this.btnRadio3 := this.gui.AddRadio("xp+60 yp vBtnMiddle" (this.button="middle"?" Checked":""), L["Middle"])
-        this.btnRadioKey := this.gui.AddRadio("xp+60 yp vBtnKey" (this.button="key"?" Checked":""), L["Key"])
+        this.gui.SetFont("s20", "Segoe UI")
+        this.gui.Add("Text", "x8 y8 w482 h41 +0x200", "Vezyl Smart Auto Clicker")
+        this.gui.SetFont()
+        this.gui.SetFont("s9", "Segoe UI")
+        this.gui.Add("Text", "x-8 y55 w503 h2 +0x10", "")
+
+
+        ; --- Chọn nút chuột bằng combobox ---
+        this.gui.AddText("x8 y63 w97 h26 +0x200", L["MouseButton"])
+        this.cbButton := this.gui.AddComboBox("x109 y64 w120 vButtonType", [L["Left"], L["Right"], L["Middle"], L["Key"]])
+        ; Gán giá trị ban đầu cho combobox
+        btnIndex := (this.button = "left") ? 1 : (this.button = "right") ? 2 : (this.button = "middle") ? 3 : 4
+        this.cbButton.Value := btnIndex
+        this.cbButton.OnEvent("Change", ObjBindMethod(this, "OnButtonTypeChanged"))
+
+        this.rdoSingleClick := this.gui.AddRadio("x360 y64 w130 h28", "Single Click")
+        this.rdoDoubleClick := this.gui.AddRadio("x496 y64 w160 h26", "Double Click")
 
         ; --- Hotkey cho phím bất kỳ ---
-        this.hkKey := this.gui.AddHotkey("xp+60 yp+2 w100 vKeyHotkey", this.keyHotkey ? this.keyHotkey : "")
-        ; Ẩn mặc định nếu không chọn radio phím
-        this.hkKey.Visible := (this.button="key")
-        ; Sự kiện chuyển radio
-        this.btnRadio.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
-        this.btnRadio2.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
-        this.btnRadio3.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
-        this.btnRadioKey.OnEvent("Click", ObjBindMethod(this, "OnRadioChanged"))
+        this.hkKey := this.gui.AddHotkey("x232 y64 w120 h24 vKeyHotkey", this.keyHotkey ? this.keyHotkey : "")
+        ; Ẩn mặc định nếu không chọn 'Key'
+        this.hkKey.Visible := (this.button = "key")
 
 
         ; --- Tốc độ click và Hotkey trên cùng 1 hàng ---
-        this.gui.AddText("xm y+15", L["ClickSpeed"])
-        this.edtInterval := this.gui.AddEdit("xp+110 yp-2 w70 vInterval", this.interval)
-        this.gui.AddText("xp+90 yp", L["Hotkey"])
-        this.hkCtrl := this.gui.AddHotkey("xp+110 yp-2 w100 vHotkey", this.hotkey)
+        this.gui.AddText("x359 y104 w120 h23 +0x200", L["ClickSpeed"])
+        this.edtInterval := this.gui.AddEdit("x480 y104 w67 h25 vInterval", this.interval)
+        this.gui.AddText("x7 y104 w150 h23 +0x200", L["Hotkey"])
+        this.hkCtrl := this.gui.AddHotkey("x159 y103 w50 h26 vHotkey", this.hotkey)
 
 
         ; --- Đọc randomRange từ config ---
-        this.randomRange := Integer(IniRead("VezylAutoClickerEclectron\config.ini", "General", "RandomRange", "20"))
+        this.randomRange := Integer(IniRead(CONFIG_FILE, "General", "RandomRange", "20"))
         randomLabel := (L.Has("RandomInterval") ? L["RandomInterval"] : "Random interval") " (+-" this.randomRange "ms)"
 
         ; --- Checkbox random interval ---
-        this.chkRandomInterval := this.gui.AddCheckBox("xm y+10 vRandomInterval" (this.randomInterval?" Checked":""), randomLabel)
+        this.chkRandomInterval := this.gui.AddCheckBox( "x8 y374 w290 h23 vRandomInterval" (this.randomInterval?" Checked":""), randomLabel)
+
+        this.chkRandomPosition := this.gui.AddCheckBox("x328 y376 w329 h23 vRandomPosition", "Random Position (Mouse Click)")
 
         ; --- Radio: Chỉ click khi cửa sổ active, click toàn bộ, hoặc click ẩn (xếp dọc) ---
-        this.rdoAllWindows := this.gui.AddRadio("xm y+15 vRdoAllWindows" (!this.onlyActive ? " Checked" : ""), L.Has("AllWindows") ? L["AllWindows"] : "Click trên toàn bộ cửa sổ")
-        this.rdoOnlyActive := this.gui.AddRadio("xm y+5 vRdoOnlyActive" (this.onlyActive ? " Checked" : ""), L.Has("OnlyActive") ? L["OnlyActive"] : "Chỉ click khi cửa sổ được chọn đang active")
-        this.rdoHiddenClick := this.gui.AddRadio("xm y+5 vRdoHiddenClick", L.Has("HiddenClick") ? L["HiddenClick"] : "Click ẩn (không cần cửa sổ active)")
+        this.rdoAllWindows := this.gui.AddRadio( "x8 y192 w289 h23 vRdoAllWindows", L.Has("AllWindows") ? L["AllWindows"] : "Click trên toàn bộ cửa sổ")
+        this.rdoOnlyActive := this.gui.AddRadio( "x8 y223 w288 h23 vRdoOnlyActive", L.Has("OnlyActive") ? L["OnlyActive"] : "Chỉ click khi cửa sổ được chọn đang active")
+        this.rdoHiddenClick := this.gui.AddRadio("x8 y256 w290 h23 vRdoHiddenClick", L.Has("HiddenClick") ? L["HiddenClick"] : "Click ẩn (không cần cửa sổ active)")
         this.rdoOnlyActive.OnEvent("Click", ObjBindMethod(this, "OnOnlyActiveChanged"))
         this.rdoAllWindows.OnEvent("Click", ObjBindMethod(this, "OnOnlyActiveChanged"))
         this.rdoHiddenClick.OnEvent("Click", ObjBindMethod(this, "OnOnlyActiveChanged"))
 
+        ; --- Đọc lại chế độ click sau khi đã tạo radio ---
+        clickMode := IniRead(iniPath, "General", "ClickMode", "all")
+        this.rdoAllWindows.Value := (clickMode = "all")
+        this.rdoOnlyActive.Value := (clickMode = "active")
+        this.rdoHiddenClick.Value := (clickMode = "hidden")
+        this.onlyActive := (clickMode = "active") ; <-- Thêm dòng này
+        this.hiddenClick := (clickMode = "hidden") ; <-- Thêm dòng này
 
-        ; --- Chọn cửa sổ xuống dưới cùng ---
-        this.txtWin := this.gui.AddText("xm y+25", L["SelectWindow"])
-        this.cb := this.gui.AddComboBox("xp+90 yp-2 vWinTitle w250", this.titles)
-        this.btnRefresh := this.gui.AddButton("xp+250 yp-2 w50", L["Refresh"]) ; Nút refresh
+        ; --- Chọn cửa sổ ---
+        this.txtWin := this.gui.AddText("x320 y194 w337 h23 +0x200 +Center", L["SelectWindow"])
+        this.cb := this.gui.AddComboBox("x320 y224  vWinTitle w257", this.titles)
+        this.btnRefresh := this.gui.AddButton("x584 y225 w73 h23", L["Refresh"]) ; Nút refresh
         this.btnRefresh.OnEvent("Click", ObjBindMethod(this, "RefreshWindowList"))
 
         if !this.onlyActive {
@@ -222,26 +277,79 @@ class AutoClickerGUI {
             this.btnRefresh.Visible := false
         }
         ; --- Checkbox bật/tắt click tại vị trí chỉ định ---
-        this.chkUsePos := this.gui.AddCheckBox("xm y+10 vUsePos" (this.usePos ? " Checked" : ""), L["UsePos"])
+        this.chkUsePos := this.gui.AddCheckBox("x8 y296 w129 h23 vUsePos" (this.usePos ? " Checked" : ""), L["UsePos"])
         this.chkUsePos.OnEvent("Click", ObjBindMethod(this, "OnUsePosChanged"))
 
         ; --- Nhập tọa độ click và nút Get Pos ---
-        this.txtX := this.gui.AddText("xm y+15", "X:")
-        this.edtX := this.gui.AddEdit("xp+20 yp-2 w60 vClickX", this.clickX)
-        this.txtY := this.gui.AddText("xp+70 yp", "Y:")
-        this.edtY := this.gui.AddEdit("xp+20 yp-2 w60 vClickY", this.clickY)
-        this.btnGetPos := this.gui.AddButton("xp+80 yp-2 w70", L["GetPos"])
+        this.txtX := this.gui.AddText("x148 y296 w27 h23 +0x200", "X:")
+        this.edtX := this.gui.AddEdit("x176 y296 w74 h25 vClickX", this.clickX)
+        this.txtY := this.gui.AddText("x271 y296 w27 h23 +0x200", "Y:")
+        this.edtY := this.gui.AddEdit("x299 y296 w74 h25 vClickY", this.clickY)
+        this.btnGetPos := this.gui.AddButton("x375 y295 w139 h28", L["GetPos"])
         this.btnGetPos.OnEvent("Click", ObjBindMethod(this, "GetPos_Click"))
 
         ; Ẩn các control tọa độ nếu chưa check
         this.OnUsePosChanged()
 
-        this.btnStart := this.gui.AddButton("xm y+20 Default", L["Start"])
+        ; --- Checkbox Auto Stop ---
+        this.autoStop := !!IniRead(iniPath, "General", "AutoStop", "0")
+        this.chkAutoStop := this.gui.AddCheckBox("x8 y335 w120 h23 vAutoStop" (this.autoStop ? " Checked" : ""), "Auto Stop")
+
+        ; Thêm label "What is auto stop?" bên cạnh checkbox
+        this.lblAutoStopInfo := this.gui.AddText("x132 y337 w120 h23 +0x200 cBlue", "What is auto stop?")
+        this.lblAutoStopInfo.OnEvent("Click", (*) => (
+            MouseGetPos(&mx, &my),
+            ToolTip("Auto Stop if mouse moves too fast (to prevent losing control).`n Doesnt work on Hidden Click mode.`nTurn off if you don't want this feature."),
+            SetTimer(() => ToolTip(), -5000)
+        ))
+        ; Tooltip sẽ hiển thị ngay tại vị trí chuột và tự tắt sau 5 giây bằng SetTimer
+
+
+                ; --- Tùy chọn dừng ---
+        this.rdoUnlimited := this.gui.AddRadio("x8 y145 w147 h23 vRdoUnlimited Checked Group", "Unlimited")
+        this.rdoStopCount := this.gui.AddRadio("x161 y146 w102 h23 vRdoStopCount", "Stop after")
+        this.rdoStopTime := this.gui.AddRadio("x400 y148 w89 h23 vRdoStopTime", "Stop after")
+
+        ; Đặt các Edit/Text cùng dòng với radio tương ứng
+        this.edtStopCount := this.gui.AddEdit("x264 y147 w63 h21 vStopCount Disabled", "100")
+        this.txtClicks := this.gui.AddText("x329 y147 w61 h23 +0x200", "clicks")
+        this.edtStopTime := this.gui.AddEdit("x490 y150 w63 h21 vStopTime Disabled", "10")
+        this.txtSeconds := this.gui.AddText("x555 y150 w61 h23 +0x200", "seconds")
+
+        ; Sự kiện bật/tắt edit box
+        this.rdoUnlimited.OnEvent("Click", (*) => (
+            this.edtStopCount.Enabled := false,
+            this.edtStopTime.Enabled := false
+        ))
+        this.rdoStopCount.OnEvent("Click", (*) => (
+            this.edtStopCount.Enabled := true,
+            this.edtStopTime.Enabled := false
+        ))
+        this.rdoStopTime.OnEvent("Click", (*) => (
+            this.edtStopCount.Enabled := false,
+            this.edtStopTime.Enabled := true
+        ))
+                ; --- Thêm nút Load/Save Config ---
+        this.btnLoadConfig := this.gui.AddButton("x327 y407 w336 h25", "Load Config")
+        this.btnSaveConfig := this.gui.AddButton("x8 y407 w306 h25", "Save Config")
+        this.btnLoadConfig.OnEvent("Click", ObjBindMethod(this, "LoadConfig_Click"))
+        this.btnSaveConfig.OnEvent("Click", ObjBindMethod(this, "SaveConfig_Click"))
+
+
+        this.btnStart := this.gui.AddButton("x494 y8 w176 h49 Default", "Start")
         this.btnStart.OnEvent("Click", ObjBindMethod(this, "Start_Click"))
         this.gui.OnEvent("Close", ObjBindMethod(this, "OnClose"))
 
+        
+
         this.L := L
         this.isRunning := false
+        this.mouseCheckTimer := ObjBindMethod(this, "CheckMouseSpeed")
+        this.lastMouseX := 0
+        this.lastMouseY := 0
+        this.lastMouseCheckTime := 0
+
+
     }
 
     OnOnlyActiveChanged(*) {
@@ -259,23 +367,77 @@ class AutoClickerGUI {
         this.edtY.Visible := show
         this.btnGetPos.Visible := show
     }
-    OnRadioChanged(*) {
-        isKey := this.btnRadioKey.Value
-        this.hkKey.Visible := isKey
+    OnButtonTypeChanged(*) {
+        ; Cập nhật thuộc tính button dựa trên combobox
+        idx := this.cbButton.Value
+        btns := ["left", "right", "middle", "key"]
+        this.button := btns[idx]
+        ; Nếu chọn 'key' thì hiện hotkey, ngược lại ẩn
+        this.hkKey.Visible := (this.button = "key")
     }
 
     Show() {
-        this.gui.Show("AutoSize")
+        this.gui.Show("w681 h466")
+    }
+    LoadConfig_Click(*) {
+        file := FileSelect(1, , "Select config file", "*.ini")
+        if !file
+            return
+        ; Đọc các giá trị từ file ini và cập nhật GUI
+        this.button := IniRead(file, "General", "Button", "left")
+        this.interval := Integer(IniRead(file, "General", "Interval", "100"))
+        this.hotkey := IniRead(file, "General", "Hotkey", "F6")
+        this.randomInterval := !!IniRead(file, "General", "RandomInterval", "1")
+        this.usePos := !!IniRead(file, "General", "UsePos", "0")
+        this.clickX := IniRead(file, "General", "ClickX", "")
+        this.clickY := IniRead(file, "General", "ClickY", "")
+        this.chkRandomInterval.Value := this.randomInterval
+        this.chkUsePos.Value := this.usePos
+        this.edtInterval.Value := this.interval
+        this.hkCtrl.Value := this.hotkey
+        this.edtX.Value := this.clickX
+        this.edtY.Value := this.clickY
+        ; Cập nhật combobox nút chuột
+        btnIndex := (this.button = "left") ? 1 : (this.button = "right") ? 2 : (this.button = "middle") ? 3 : 4
+        this.cbButton.Value := btnIndex
+        this.hkKey.Visible := (this.button = "key")
+        ; Cập nhật chế độ click
+        clickMode := IniRead(file, "General", "ClickMode", "all")
+        this.rdoAllWindows.Value := (clickMode = "all")
+        this.rdoOnlyActive.Value := (clickMode = "active")
+        this.rdoHiddenClick.Value := (clickMode = "hidden")
+        this.OnOnlyActiveChanged()
+        ; AutoStop
+        this.chkAutoStop.Value := !!IniRead(file, "General", "AutoStop", "0")
+        MsgBox "Config loaded!"
+    }
+
+    SaveConfig_Click(*) {
+        file := FileSelect(2, , "Save config as", "*.ini")
+        if !file
+            return
+        ; Đảm bảo file có đuôi .ini
+        if !RegExMatch(file, "\.ini$") {
+            file .= ".ini"
+        }
+        IniWrite(this.button,    file, "General", "Button")
+        IniWrite(String(this.edtInterval.Value),  file, "General", "Interval")
+        IniWrite(String(this.hkCtrl.Value),    file, "General", "Hotkey")
+        IniWrite(this.chkRandomInterval.Value ? "1" : "0", file, "General", "RandomInterval")
+        IniWrite(String(this.cb.Text),   file, "General", "WindowTitle")
+        IniWrite(String(this.selectedID), file, "General", "WindowID")
+        IniWrite(this.chkUsePos.Value ? "1" : "0", file, "General", "UsePos")
+        IniWrite(String(this.edtX.Value),      file, "General", "ClickX")
+        IniWrite(String(this.edtY.Value),      file, "General", "ClickY")
+        IniWrite(this.chkAutoStop.Value ? "1" : "0", file, "General", "AutoStop")
+        clickMode := this.rdoAllWindows.Value ? "all" : this.rdoOnlyActive.Value ? "active" : "hidden"
+        IniWrite(clickMode, file, "General", "ClickMode")
+        MsgBox "Config saved!"
     }
 
     Start_Click(*) {
-        localIniDir := "VezylAutoClickerProton"
-            localIni := localIniDir "\local.ini"
-            if !DirExist(localIniDir)
-                DirCreate localIniDir
-            if FileExist(localIni)
-                FileDelete localIni
-            
+        localIni := LOCAL_ENV
+
         if (!this.isRunning) {
             ; Nếu chỉ click khi cửa sổ active hoặc click ẩn, bắt buộc phải chọn cửa sổ
             if (this.rdoOnlyActive.Value || this.rdoHiddenClick.Value) {
@@ -293,23 +455,27 @@ class AutoClickerGUI {
                 this.selectedID := "" ; Không cần ID khi click toàn cục
             }
 
-            if (this.btnRadio.Value)
-                this.button := "left"
-            else if (this.btnRadio2.Value)
-                this.button := "right"
-            else if (this.btnRadio3.Value)
-                this.button := "middle"
-            else if (this.btnRadioKey.Value) {
-                this.button := "key"
+        if (!this.IsPremium) {
+            MsgBox "This feature is only available in the Premium version. Please upgrade to use it."
+            if (this.rdoHiddenClick.Value) {
+                this.ShowLicenseBox()
+                return
+            }
+        }
+        
+            ; Lấy giá trị nút chuột từ combobox
+            btns := ["left", "right", "middle", "key"]
+            this.button := btns[this.cbButton.Value]
+            if (this.button = "key") {
                 this.keyHotkey := this.hkKey.Value
                 if (this.keyHotkey = "") {
                     MsgBox "Please select a key!"
                     return
                 }
-            }
-            if (this.btnRadioKey.Value && this.rdoHiddenClick.Value) {
-                MsgBox "Hidden click do not support key press!"
-                return
+                if (this.rdoHiddenClick.Value) {
+                    MsgBox "Hidden click do not support key press!"
+                    return
+                }
             }
             this.interval := Integer(this.edtInterval.Value)
             if (this.interval < 1) {
@@ -322,6 +488,15 @@ class AutoClickerGUI {
                 return
             }
             this.hotkey := hk
+            ; Xác định chế độ click
+            if (this.rdoAllWindows.Value)
+                clickMode := "all"
+            else if (this.rdoOnlyActive.Value)
+                clickMode := "active"
+            else if (this.rdoHiddenClick.Value)
+                clickMode := "hidden"
+            IniWrite(clickMode, localIni, "General", "ClickMode")
+
             ; Xác định chế độ onlyActive và hiddenClick
             this.onlyActive := this.rdoOnlyActive.Value
             this.hiddenClick := this.rdoHiddenClick.Value
@@ -347,50 +522,84 @@ class AutoClickerGUI {
             IniWrite(this.button,    localIni, "General", "Button")
             IniWrite(this.interval,  localIni, "General", "Interval")
             IniWrite(this.hotkey,    localIni, "General", "Hotkey")
-            IniWrite(this.onlyActive,localIni, "General", "OnlyActive")
             IniWrite(this.randomInterval,localIni, "General", "RandomInterval")
             IniWrite(this.cb.Text,   localIni, "General", "WindowTitle")
             IniWrite(this.selectedID,localIni, "General", "WindowID")
             IniWrite(this.chkUsePos.Value, localIni, "General", "UsePos")
             IniWrite(this.edtX.Value,      localIni, "General", "ClickX")
             IniWrite(this.edtY.Value,      localIni, "General", "ClickY")
+            IniWrite(this.chkAutoStop.Value, localIni, "General", "AutoStop")
 
             if (IsObject(this.clicker))
                 this.clicker.Stop()
 
-            this.randomRange := Integer(IniRead("VezylAutoClickerEclectron\config.ini", "General", "RandomRange", "20"))
-            this.clicker := AutoClicker(this.selectedID, this.button, this.interval, this.onlyActive, this.randomInterval, this.clickX, this.clickY, this.randomRange, this.keyHotkey, this.hiddenClick)
+            this.randomRange := Integer(IniRead(CONFIG_FILE, "General", "RandomRange", "20"))
+            stopMode := this.rdoUnlimited.Value ? "unlimited" : this.rdoStopCount.Value ? "count" : "time"
+            this.clicker := AutoClicker(
+                this.selectedID, this.button, this.interval, this.onlyActive, this.randomInterval,
+                this.clickX, this.clickY, this.randomRange, this.keyHotkey, this.hiddenClick,
+                stopMode, Integer(this.edtStopCount.Value), Integer(this.edtStopTime.Value)
+            )
+            if (this.hotkey) {
+                try Hotkey(this.hotkey, , "Off")
+            }
             Hotkey(this.hotkey, ObjBindMethod(this, "ToggleClicker"), "On")
             this.isRunning := true
-            this.btnStart.Text := this.L.Has("Stop") ? this.L["Stop"] : "Dừng"
+            this.btnStart.Text := (this.L.Has("Stop") ? this.L["Stop"] : "Dừng")
             SoundBeep
             Sleep 100
             SoundBeep
             this.clicker.Start()
+            ; Bắt đầu kiểm tra tốc độ chuột nếu Auto Stop bật
+            if (this.chkAutoStop.Value && (this.rdoAllWindows.Value || this.rdoOnlyActive.Value)) {
+                local mx, my
+                MouseGetPos(&mx, &my)
+                this.lastMouseX := mx
+                this.lastMouseY := my
+                this.lastMouseCheckTime := A_TickCount
+                SetTimer(this.mouseCheckTimer, 30)
+            }
         } else {
             if (IsObject(this.clicker))
                 this.clicker.Stop()
             this.isRunning := false
             this.btnStart.Text := this.L.Has("Start") ? this.L["Start"] : "Bắt đầu"
             SoundBeep
+            SetTimer(this.mouseCheckTimer, 0)
         }
     }
-
     ToggleClicker(*) {
-        if (IsObject(this.clicker)) {
-            this.clicker.Toggle()
-            this.isRunning := this.clicker.running
-            this.btnStart.Text := this.isRunning
-                ? (this.L.Has("Stop") ? this.L["Stop"] : "Dừng")
-                : (this.L.Has("Start") ? this.L["Start"] : "Bắt đầu")
-            if this.isRunning {
-                SoundBeep
-                Sleep 100
-                SoundBeep
-            } else {
-                SoundBeep
-            }
+        if (this.isRunning)
+            this.Stop_Click()
+        else
+            this.Start_Click()
+    }
+    Stop_Click(*) {
+        if (IsObject(this.clicker))
+            this.clicker.Stop()
+        this.isRunning := false
+        this.btnStart.Text := this.L.Has("Start") ? this.L["Start"] : "Bắt đầu"
+        SoundBeep
+        SetTimer(this.mouseCheckTimer, 0)
+    }
+    CheckMouseSpeed(*) {
+        MouseGetPos(&curX, &curY)
+        now := A_TickCount
+        dt := now - this.lastMouseCheckTime
+        if (dt < 10) ; tránh chia 0 hoặc quá nhỏ
+            return
+        dx := curX - this.lastMouseX
+        dy := curY - this.lastMouseY
+        dist := Sqrt(dx*dx + dy*dy)
+        speed := dist / dt ; px/ms
+        ; Ngưỡng tốc độ: ví dụ > 50 px/ms (tương đương 5000px trong 100ms)
+        if (speed > 50 && this.isRunning && this.chkAutoStop.Value && (this.rdoAllWindows.Value || this.rdoOnlyActive.Value)) {
+            SetTimer(this.mouseCheckTimer, 0)
+            SetError("Auto click stopped: Mouse moved too fast! (Auto Stop)")
         }
+        this.lastMouseX := curX
+        this.lastMouseY := curY
+        this.lastMouseCheckTime := now
     }
 
     OnClose(*) {
@@ -410,7 +619,7 @@ class AutoClickerGUI {
             }
             Sleep 300 ; Đợi cửa sổ active
         }
-        ToolTip "Click chuột phải để lấy vị trí..."
+        ToolTip "Right click to get position..."
         ; Đợi click chuột phải
         Hotkey("RButton", ObjBindMethod(this, "OnGetPosRButton"), "On")
     }
@@ -434,6 +643,88 @@ class AutoClickerGUI {
         this.cb.Add(this.titles) ; Thêm lại danh sách mới
         this.cb.Text := "" ; Reset lựa chọn
     }
+    ShowLicenseBox() {
+        licensegui := Gui("+AlwaysOnTop", "Enter License Key")
+        licensegui.SetFont("s10", "Segoe UI")
+        serial64 := GetDriveSerialBase64()
+        licensegui.AddText("xm", "Enter License Key to use Premium feature:")
+        edt := licensegui.AddEdit("xm w250 vKey")
+        lblInvalid := licensegui.AddText("xm y+5 w220 cRed", "") ; label báo lỗi, thêm w220 để đủ rộng
+        btnOK := licensegui.AddButton("xm w120", "OK")
+        btnNoKey := licensegui.AddButton("x+10 w120", "I dont have one")
+        result := ""
+        closed := false
+        btnOK.OnEvent("Click", (*) => (
+            result := edt.Value,
+            lblInvalid.Text := "",
+            (Trim(result) != "" ? (
+                IniDelete(GLOBAL_ENV, "General", "userError"),
+                IniWrite(result, GLOBAL_ENV, "General", "userError"),
+                this.VerifyKey(serial64, result)
+                    ? (
+                        closed := true,
+                        licensegui.Destroy(),
+                        MsgBox("License key accepted! You can now use Premium features."),
+                        Run(A_ScriptFullPath),
+                        ExitApp
+                    )
+                    : (lblInvalid.Text := "Invalid key!", edt.Focus())
+            ) : "")
+        ))
+        btnNoKey.OnEvent("Click", (*) => (
+            edt.Value := serial64, ; Gán personal ID vào textbox nhập key
+            edt.Focus()            ; Đưa focus vào textbox để dễ copy
+        ))
+        licensegui.OnEvent("Close", (*) => (
+            closed := true,
+            licensegui.Destroy()
+        ))
+        licensegui.Show("w280 h140")
+        while !closed
+            Sleep 50
+    }
+    VerifyKey(base64, key) {
+        secret := "vezyl2025pros" ; Đổi thành chuỗi bí mật giống hàm trên
+        expected := SubStr(this.Hash("MD5", base64 . secret), 1, 16)
+        if (key = "802b166628fd049e") {
+            expected := "802b166628fd049e" ; Key mặc định cho người dùng thử
+        }
+        return (key = expected)
+    }
+
+    Hash(alg, input) {
+        if (alg != "MD5")
+            throw Error("Chỉ hỗ trợ MD5")
+        tmpFile := A_Temp . "\\ahk_md5_input.txt"
+        if FileExist(tmpFile)
+            FileDelete tmpFile
+        FileAppend input, tmpFile, "UTF-8"
+        hash := ""
+        try {
+            for line in StrSplit(StdOut := this.ExecGetStdOut('certutil -hashfile "' tmpFile '" MD5'), "`n") {
+                if RegExMatch(line, "i)^[0-9a-f]{32}$", &m) {
+                    hash := m[0]
+                    break
+                }
+            }
+        } catch {
+            ; Handle error
+        }
+        if FileExist(tmpFile)
+            FileDelete tmpFile
+        return hash
+    }
+
+    ExecGetStdOut(cmd) {
+        tmpOut := A_Temp . "\\ahk_md5_output.txt"
+        RunWait cmd . ' > "' . tmpOut . '"', , "Hide"
+        if FileExist(tmpOut) {
+            result := FileRead(tmpOut, "UTF-8")
+            FileDelete tmpOut
+            return result
+        }
+        return ""
+    }
 }
 
 Max(a, b) {
@@ -446,3 +737,32 @@ Min(a, b) {
 ; Chạy chương trình
 app := AutoClickerGUI()
 app.Show()
+
+GetDriveSerialBase64() {
+    serial := DriveGetSerial("C:\")
+    return BufferToBase64(serial)
+}
+
+BufferToBase64(str) {
+    buf := Buffer(StrPut(str, "UTF-8"))
+    StrPut(str, buf, "UTF-8")
+    return CryptBinaryToString(buf)
+}
+
+CryptBinaryToString(buf) {
+    static CRYPT_STRING_BASE64 := 0x1
+    DllCall("Crypt32.dll\CryptBinaryToStringW"
+        , "Ptr", buf.Ptr
+        , "UInt", buf.Size
+        , "UInt", CRYPT_STRING_BASE64
+        , "Ptr", 0
+        , "UInt*", &len := 0)
+    out := Buffer(len * 2)
+    DllCall("Crypt32.dll\CryptBinaryToStringW"
+        , "Ptr", buf.Ptr
+        , "UInt", buf.Size
+        , "UInt", CRYPT_STRING_BASE64
+        , "Ptr", out.Ptr
+        , "UInt*", &len)
+    return StrGet(out, len)
+}
