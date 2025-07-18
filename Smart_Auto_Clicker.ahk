@@ -1,6 +1,3 @@
-
-
-
 ; Đảm bảo mã hóa file là UTF-8 cho Unicode
 FileEncoding "UTF-8"
 
@@ -17,6 +14,8 @@ CheckForUpdate() {
 
 ; --- Biến toàn cục cờ lỗi ---
 global ErrorFlag := false
+global APP_NAME := "Smart_Auto_Clicker"
+global REG_PATH := "HKEY_CURRENT_USER\Software\VEZYL_SOFTWARE\" APP_NAME
 global CONFIG_FILE := "VezylAutoClickerEclectron\config.ini"
 global GLOBAL_ENV := "VezylAutoClickerProton\global.ini"
 global LOCAL_ENV := "VezylAutoClickerProton\local.ini"
@@ -203,8 +202,8 @@ class AutoClickerGUI {
         this.clickY := ""
         this.onlyActive := false
         this.hiddenClick := false
-        ; Kiểm tra premium từ file config khi khởi động
-        userKey := IniRead(GLOBAL_ENV, "General", "userError", "")
+        ; Kiểm tra premium từ registry khi khởi động
+        userKey := RegRead(REG_PATH, APP_NAME "_LICENSE", "")
         serial64 := GetDriveSerialBase64()
         this.IsPremium := (userKey != "" && this.VerifyKey(serial64, userKey))
 
@@ -406,6 +405,7 @@ class AutoClickerGUI {
         this.edtY.Visible := show
         this.btnGetPos.Visible := show
     }
+
     OnButtonTypeChanged(*) {
         ; Cập nhật thuộc tính button dựa trên combobox
         idx := this.cbButton.Value
@@ -418,6 +418,7 @@ class AutoClickerGUI {
     Show() {
         this.gui.Show("w681 h466")
     }
+
     LoadConfig_Click(*) {
         file := FileSelect(1, , "Select config file", "*.ini")
         if !file
@@ -524,9 +525,15 @@ class AutoClickerGUI {
 
         if (!this.IsPremium) {
             if (this.rdoHiddenClick.Value) {
-                ; MsgBox "This feature is only available in the Premium version. Please upgrade to use it."
-                this.ShowLicenseBox()
-                return
+                ; Kiểm tra lại key từ registry trước khi hiện hộp license (tránh trường hợp key vừa nhập chưa cập nhật)
+                userKey := RegRead(REG_PATH, APP_NAME "_LICENSE", "")
+                serial64 := GetDriveSerialBase64()
+                if !(userKey != "" && this.VerifyKey(serial64, userKey)) {
+                    this.ShowLicenseBox()
+                    return
+                } else {
+                    this.IsPremium := true
+                }
             }
         }
         
@@ -704,6 +711,7 @@ class AutoClickerGUI {
         this.cb.Add(this.titles) ; Thêm lại danh sách mới
         this.cb.Text := "" ; Reset lựa chọn
     }
+
     ShowLicenseBox() {
         licensegui := Gui("+AlwaysOnTop", "Enter License Key")
         licensegui.SetFont("s10", "Segoe UI")
@@ -719,8 +727,7 @@ class AutoClickerGUI {
             result := edt.Value,
             lblInvalid.Text := "",
             (Trim(result) != "" ? (
-                IniDelete(GLOBAL_ENV, "General", "userError"),
-                IniWrite(result, GLOBAL_ENV, "General", "userError"),
+                this.SaveKeyToRegistry(result),
                 this.VerifyKey(serial64, result)
                     ? (
                         closed := true,
@@ -729,7 +736,7 @@ class AutoClickerGUI {
                         Run(A_ScriptFullPath),
                         ExitApp
                     )
-                    : (lblInvalid.Text := "Invalid key!", edt.Focus())
+                    : (lblInvalid.Text := "Invalid key!")
             ) : "")
         ))
         btnNoKey.OnEvent("Click", (*) => (
@@ -743,14 +750,6 @@ class AutoClickerGUI {
         licensegui.Show("w280 h140")
         while !closed
             Sleep 50
-    }
-    VerifyKey(base64, key) {
-        secret := "vezyl2025pros" ; Đổi thành chuỗi bí mật giống hàm trên
-        expected := SubStr(this.Hash("MD5", base64 . secret), 1, 16)
-        if (key = "802b166628fd049e") {
-            expected := "802b166628fd049e" ; Key mặc định cho người dùng thử
-        }
-        return (key = expected)
     }
 
     Hash(alg, input) {
@@ -768,8 +767,6 @@ class AutoClickerGUI {
                     break
                 }
             }
-        } catch {
-            ; Handle error
         }
         if FileExist(tmpFile)
             FileDelete tmpFile
@@ -778,7 +775,8 @@ class AutoClickerGUI {
 
     ExecGetStdOut(cmd) {
         tmpOut := A_Temp . "\\ahk_md5_output.txt"
-        RunWait cmd . ' > "' . tmpOut . '"', , "Hide"
+        fullCmd := 'cmd /c ' . cmd . ' > "' . tmpOut . '"'
+        RunWait fullCmd, , "Hide"
         if FileExist(tmpOut) {
             result := FileRead(tmpOut, "UTF-8")
             FileDelete tmpOut
@@ -786,6 +784,49 @@ class AutoClickerGUI {
         }
         return ""
     }
+
+    GenKeyFromBase64(base64) {
+        secret := "vezyl2025pros"
+        ; Không trim, không thay đổi input
+        return SubStr(this.Hash("MD5", base64 . secret), 1, 16)
+    }
+
+    VerifyKey(base64, key) {
+        secret := "vezyl2025pros"
+        expected := SubStr(this.Hash("MD5", base64 . secret), 1, 16)
+        ; --- Trial key đơn giản ---
+        if (key = "AUTO_CLICK_2025_TRIAL") {
+            trialDate := RegRead(REG_PATH, APP_NAME "_TRIAL_DATE", "")
+            if (trialDate = "") {
+                RegWrite(A_Now, "REG_SZ", REG_PATH, APP_NAME "_TRIAL_DATE")
+                trialDate := A_Now
+            }
+            now := SubStr(A_Now, 1, 8)
+            trialDay := SubStr(trialDate, 1, 8)
+            days := this.DateDiffDays(trialDay, now)
+            return (days >= 0 && days < 5)
+        }
+        return (key = expected)
+    }
+
+    ; Tính số ngày giữa 2 chuỗi yyyyMMdd
+    DateDiffDays(date1, date2) {
+        y1 := Integer(SubStr(date1, 1, 4))
+        m1 := Integer(SubStr(date1, 5, 2))
+        d1 := Integer(SubStr(date1, 7, 2))
+        y2 := Integer(SubStr(date2, 1, 4))
+        m2 := Integer(SubStr(date2, 5, 2))
+        d2 := Integer(SubStr(date2, 7, 2))
+        ; Đơn giản hóa: 1 tháng = 30 ngày, 1 năm = 365 ngày
+        t1 := (y1 - 1900) * 365 + (m1 - 1) * 30 + d1
+        t2 := (y2 - 1900) * 365 + (m2 - 1) * 30 + d2
+        return t2 - t1
+    }
+    SaveKeyToRegistry(key) {
+        RegWrite(key, "REG_SZ", REG_PATH, APP_NAME "_LICENSE")
+    }
+
+
 }
 
 Max(a, b) {
@@ -804,8 +845,9 @@ app := AutoClickerGUI()
 app.Show()
 
 GetDriveSerialBase64() {
-    serial := DriveGetSerial("C:\")
-    return BufferToBase64(serial)
+    serial := BufferToBase64(DriveGetSerial("C:\"))
+    ; Loại bỏ mọi ký tự xuống dòng ở cuối chuỗi base64
+    return RegExReplace(serial, "[\r\n]+$", "")
 }
 
 BufferToBase64(str) {

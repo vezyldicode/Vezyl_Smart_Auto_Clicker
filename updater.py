@@ -217,7 +217,8 @@ def main():
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(TMP_UPDATE_DIR)
                 # Xóa updater.exe nếu có
-                updater_exe = os.path.join(TMP_UPDATE_DIR, UPDATER_EXE_NAME)
+                zip_folder_name = os.path.splitext(zip_name)[0]
+                updater_exe = os.path.join(TMP_UPDATE_DIR, zip_folder_name, UPDATER_EXE_NAME)
                 if os.path.exists(updater_exe):
                     try:
                         os.remove(updater_exe)
